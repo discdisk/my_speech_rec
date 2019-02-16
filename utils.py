@@ -11,6 +11,23 @@ from chainer.utils import collections_abc
 from chainer.utils import type_check
 from chainer.iterators.order_samplers import OrderSampler
 import math
+
+
+def argsort_list_descent(lst):
+    return numpy.argsort([-len(x.data) for x in lst]).astype('i')
+
+
+def permutate_list(lst, indices, inv):
+    ret = [None] * len(lst)
+    if inv:
+        for i, ind in enumerate(indices):
+            ret[ind] = lst[i]
+    else:
+        for i, ind in enumerate(indices):
+            ret[i] = lst[ind]
+    return ret
+
+
 class util():
     """docstring for utils"""
     def __init__(self,device,blank):
@@ -20,6 +37,9 @@ class util():
         self.blank=blank
         self.stacked_frames=8
         self.skip_size=3
+
+        self.pad_size=int((9-1)/2) #attention winSize 9
+        self.pad_zero=xp.zeros((self.pad_size,self.stacked_frames*40),dtype=self.xp.float32)
         
 
     def converter(self,batch,device=-1):
@@ -29,11 +49,27 @@ class util():
         Xs = [self.xp.asarray(list(X)).astype(self.xp.float32).reshape(-1,DATA_SHAPE)for X, _ in batch]
         Xs =[F.concat((X,self.xp.zeros((self.stacked_frames-len(X),DATA_SHAPE),dtype=self.xp.float32)),axis=0) if len(X)<self.stacked_frames else X for X in Xs]
         Xs =[F.pad_sequence([X[i:i+self.stacked_frames] for i in range(0,len(X),self.skip_size)]).reshape(-1,DATA_SHAPE*self.stacked_frames) for X in Xs]
+        
+
+        #pad sequence because of local attention winSize
+        Xs=[F.concat((F.concat((self.pad_zero,x),axis=0),self.pad_zero),axis=0) for x in Xs]
+        
+
+        #sort input Seq by length
+        indices = argsort_list_descent(Xs)
+        indices_array = xp.array(indices)
+
+        Xs = permutate_list(Xs, indices, inv=False)
+
+
         self.numframes = [len(X) for X in Xs]
 
 
         word_label = [self.xp.asarray(lab[0]).astype(self.xp.int32) for _, lab in batch]
         type_label = [self.xp.asarray(lab[1]).astype(self.xp.int32) for _, lab in batch]
+        
+        word_label = permutate_list(word_label, indices, inv=False)
+        type_label = permutate_list(type_label, indices, inv=False)
         self.label_length=[len(l) for l in word_label]
 
 
