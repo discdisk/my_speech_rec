@@ -5,8 +5,27 @@ import chainer
 import numpy as np
 from chainer.backends import cuda
 
+
+class Linear3D(L.Linear):
+    def __init__(self, *args, **kwargs):
+        super(Linear3D, self).__init__(*args, **kwargs)
+
+    def call(self, x):
+        return super(Linear3D, self).__call__(x)
+
+    def __call__(self, x):
+        if x.ndim == 2:
+            return self.call(x)
+        assert x.ndim == 3
+
+        x_2d = x.reshape((-1, x.shape[-1]))
+        out_2d = self.call(x_2d)
+        out_3d = out_2d.reshape(x.shape[:-1] + (out_2d.shape[-1], ))
+        # (B, S, W)
+        return out_3d
+
 def argsort_list_descent(lst):
-    return numpy.argsort([-len(x.data) for x in lst]).astype('i')
+    return np.argsort([-len(x) for x in lst]).astype('i')
 
 
 def permutate_list(lst, indices, inv):
@@ -20,25 +39,28 @@ def permutate_list(lst, indices, inv):
     return ret
 
 
-
 class RNN(chainer.Chain):
 
     def __init__(self, n_lstm_layers, n_mid_units, n_out, win_size, batch_size, att_units_size, dropout=0.5 ):
         super(RNN, self).__init__()
 
-        initializer = chainer.initializers.Normal()
-        
+        initializer = chainer.initializers.LeCunNormal()
         with self.init_scope():
             # self.layer_norm1=L.LayerNormalization()
-            self.fc1 = L.Linear(None, n_mid_units,initialW=initializer)
+            self.l1 = L.Linear(None, n_mid_units,initialW=initializer)
             # self.batch_norm1=L.BatchNormalization(n_mid_units)
 
-            self.lstm = L.NStepLSTM(n_lstm_layers,
-                                    in_size=n_mid_units, \
-                                    out_size=n_mid_units,
-                                    dropout=dropout,)
+            # self.l2 = L.NStepLSTM(n_lstm_layers,
+            #                         in_size=n_mid_units, \
+            #                         out_size=n_mid_units,
+            #                         dropout=dropout,)
+
+            self.lstm=L.LSTM(in_size=n_mid_units, out_size=n_mid_units).repeat(3)
             # self.layer_norm2=L.LayerNormalization()
             # self.batch_norm2=L.BatchNormalization(n_mid_units)
+
+            self.word_output = L.Linear(n_mid_units, n_out,initialW=initializer)
+            self.type_output = L.Linear(n_mid_units, 16,initialW=initializer)
 
 
 
@@ -49,27 +71,29 @@ class RNN(chainer.Chain):
 
 
     def __call__(self, xs):
-    # forward calculation
+        # forward calculation
 
-    # sort input sequence by length
         indices = argsort_list_descent(xs)
-        indices_array = xp.array(indices)
 
         xs = permutate_list(xs, indices, inv=False)
 
-    # from shape(B,S,V)==>(S,B,V)
-        trans_x = transpose_sequence.transpose_sequence(xs)
-        hy, cy = None, None
+        # h = [ F.relu(self.l1(x)) for x in xs ]
+
+        # _, _, ys = self.l2(None, None, h)
+
+        xs=F.transpose_sequence(xs)
+
         for x in xs:
+            h=F.relu(self.l1(x))
 
-            h1 = F.relu(self.fc1(x))
-            hy, cy, ys = self.l2(hy, cy, h1)
+            for child in self.lstm.children():
+                h=F.dropout(child(h))
+            self.input_query.append(ys)
+            context=self.attend(self.input_query,last_context)
 
-            result=self.attend(ys)
-
-
-
-
+            result=self.word_output(context)
+            result_type=self.type_output(context)
+        # self.parameter_check()
         return result
 
 
@@ -92,34 +116,22 @@ class Attention(chainer.Chain):
         self.batch_size=batch_size
         self.n_out=n_out
         with self.init_scope():
-            self.Zu = self.xp.zeros((batch_size,n_out+16),dtype=np.float32)
+            # self.Zu = self.xp.zeros((batch_size,n_out+16),dtype=np.float32)
             self.last_key = L.Linear(n_out+16, self.att_units_size,initialW=initializer)
             self.query = L.Linear(n_mid_units, self.att_units_size,initialW=initializer)
             self.value = L.Linear(self.att_units_size,n_mid_units,initialW=initializer)
-            self.word_output = L.Linear(n_mid_units, n_out,initialW=initializer)
-            self.type_output = L.Linear(n_mid_units, 16,initialW=initializer)
+            
 
 
-    def reset(self):
-        self.query_input=None
-        self.Zu=self.Zu = self.xp.zeros((self.batch_size,self.n_out+16),dtype=np.float32)
 
 
-    def __call__(self, x):
+    def __call__(self, query, key):
 
-        if self.query_input is None:
-            self.query_input=self.query(x)[None]
 
-        shape=self.query_input.shape
-        if shape[1]>x.shape[0]:
-            self.query_input=self.query_input[:,:x.shape[0],:]
-            self.Zu+self.Zu[:,:x.shape[0],:]
+            Z=self.last_key(key)
+            Z=F.broadcast_to(Z,query.shape)
 
-        self.query_input=F.concat(self.query_input,self.query(x)[None])
-        if shape[0] == self.win_size:
-
-            Z=self.last_key(self.Zu)
-            Z=F.broadcast_to(Z,self.query_input.shape)
+            hx=self.query(query,n_batch_axes=2)
 
 
             attendW=F.softmax(
@@ -128,16 +140,11 @@ class Attention(chainer.Chain):
                     )
                 ,axis=0)
 
-            context=attendW*self.query_input
+            context=attendW*query
 
 
             context=F.sum(context,axis=0,keepdims=False)*self.win_size
-            result=self.output(context)
-            result_type=self.type_output(context)
 
-            self.Zu=F.concat([result,result_type]).data
-            self.query_input=self.query_input[1:]
-
-        return result,result_type
+        return context
 
 
