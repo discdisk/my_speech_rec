@@ -24,77 +24,55 @@ class Linear3D(L.Linear):
         # (B, S, W)
         return out_3d
 
-def argsort_list_descent(lst):
-    return np.argsort([-len(x) for x in lst]).astype('i')
-
-
-def permutate_list(lst, indices, inv):
-    ret = [None] * len(lst)
-    if inv:
-        for i, ind in enumerate(indices):
-            ret[ind] = lst[i]
-    else:
-        for i, ind in enumerate(indices):
-            ret[i] = lst[ind]
-    return ret
-
 
 class RNN(chainer.Chain):
 
     def __init__(self, n_lstm_layers, n_mid_units, n_out, win_size, batch_size, att_units_size, dropout=0.5 ):
         super(RNN, self).__init__()
 
-        initializer = chainer.initializers.LeCunNormal()
+        initializer = chainer.initializers.Normal()
+        n_word_out=n_out[0]
+        n_char_out=n_out[1]
         with self.init_scope():
             # self.layer_norm1=L.LayerNormalization()
             self.l1 = L.Linear(None, n_mid_units,initialW=initializer)
             # self.batch_norm1=L.BatchNormalization(n_mid_units)
+            self.char_out = L.Linear(n_mid_units, n_char_out,initialW=initializer)
 
-            # self.l2 = L.NStepLSTM(n_lstm_layers,
-            #                         in_size=n_mid_units, \
-            #                         out_size=n_mid_units,
-            #                         dropout=dropout,)
-
-            self.lstm=L.LSTM(in_size=n_mid_units, out_size=n_mid_units).repeat(3)
+            self.lstm1 = L.NStepLSTM(1,
+                                    in_size=n_mid_units, \
+                                    out_size=n_mid_units,
+                                    dropout=dropout,)
+            self.lstm2 = L.NStepLSTM(n_lstm_layers,
+                                    in_size=n_mid_units, \
+                                    out_size=n_mid_units,
+                                    dropout=dropout,)
             # self.layer_norm2=L.LayerNormalization()
             # self.batch_norm2=L.BatchNormalization(n_mid_units)
 
-            self.word_output = L.Linear(n_mid_units, n_out,initialW=initializer)
-            self.type_output = L.Linear(n_mid_units, 16,initialW=initializer)
 
 
 
 
-
-            self.attend = Attention(n_mid_units, n_out, win_size, batch_size, att_units_size)
-
+            self.attend = Attention(n_mid_units, n_word_out, win_size, batch_size, att_units_size)
 
 
-    def __call__(self, xs):
+
+    def __call__(self, x):
         # forward calculation
 
-        indices = argsort_list_descent(xs)
+        h1 = [ F.relu(self.l1(X)) for X in x ]
+        _, _, ys = self.lstm1(None, None, h1)
 
-        xs = permutate_list(xs, indices, inv=False)
+        result_char = [self.char_out(y) for y in ys ]
+        result_char=F.pad_sequence(result_char)
+        result_char=list(F.stack(result_char,axis=1))
 
-        # h = [ F.relu(self.l1(x)) for x in xs ]
+        _, _, ys = self.lstm2(None, None, ys)
 
-        # _, _, ys = self.l2(None, None, h)
-
-        xs=F.transpose_sequence(xs)
-
-        for x in xs:
-            h=F.relu(self.l1(x))
-
-            for child in self.lstm.children():
-                h=F.dropout(child(h))
-            self.input_query.append(ys)
-            context=self.attend(self.input_query,last_context)
-
-            result=self.word_output(context)
-            result_type=self.type_output(context)
+        result=self.attend(ys)
         # self.parameter_check()
-        return result
+        return result,result_char
 
 
 
@@ -107,44 +85,56 @@ class Attention(chainer.Chain):
     def __init__(self, n_mid_units, n_out, win_size, batch_size, att_units_size, device=-1):
         super(Attention,self).__init__()
 
+        self.pad_size=int((win_size-1)/2)
+        self.win_size=win_size
+        self.batch_size=batch_size
+        self.att_units_size=att_units_size
+        self.n_mid_units=n_mid_units
+        self.n_out=n_out
+        xp=cuda.cupy
+
+        self.Zu = xp.zeros((batch_size,n_mid_units),dtype=np.float32)
+        self.pad_zero=xp.zeros((self.pad_size,n_mid_units),dtype=self.xp.float32)
 
         initializer = chainer.initializers.LeCunNormal()
 
-        
-        self.win_size=win_size
-        self.query_input=None
-        self.batch_size=batch_size
-        self.n_out=n_out
         with self.init_scope():
-            # self.Zu = self.xp.zeros((batch_size,n_out+16),dtype=np.float32)
-            self.last_key = L.Linear(n_out+16, self.att_units_size,initialW=initializer)
-            self.query = L.Linear(n_mid_units, self.att_units_size,initialW=initializer)
-            self.value = L.Linear(self.att_units_size,n_mid_units,initialW=initializer)
-            
+            self.last_out = L.Linear(n_mid_units, self.att_units_size,initialW=initializer)
+            self.hidden_layer = L.Linear(n_mid_units, self.att_units_size,initialW=initializer)
+            self.att_cal = L.Linear(self.att_units_size,n_mid_units,initialW=initializer)
+            self.output = L.Linear(n_mid_units, n_out,initialW=initializer)
 
+    def __call__(self, x):
+        self.Zu=self.xp.zeros(self.Zu.shape,dtype=np.float32)
 
+        gts=[F.concat((F.concat((self.pad_zero,gt),axis=0),self.pad_zero),axis=0) for gt in x]
+        gts=F.pad_sequence(gts,padding=self.xp.zeros((self.n_mid_units),dtype=self.xp.float32))
+        gts=F.stack(gts,axis=1)
 
+        result=[]        
+        for i in range(len(gts)-self.pad_size*2):
+            gt=gts[i:i+self.win_size]
+            hx=self.hidden_layer(gt,n_batch_axes=2)
 
-    def __call__(self, query, key):
+            Z=self.last_out(self.Zu)
+            Z=F.broadcast_to(Z,(self.win_size,self.batch_size,self.att_units_size))
 
+            attend=hx+Z
 
-            Z=self.last_key(key)
-            Z=F.broadcast_to(Z,query.shape)
-
-            hx=self.query(query,n_batch_axes=2)
-
-
-            attendW=F.softmax(
-                F.tanh(
-                    self.value(hx+Z,n_batch_axes=2)
-                    )
+            attend=F.softmax(
+                self.att_cal(
+                    F.tanh(attend.reshape(-1,self.att_units_size))
+                    ).reshape(-1,self.batch_size,self.n_mid_units)
                 ,axis=0)
 
-            context=attendW*query
+            context=attend*gt
 
 
             context=F.sum(context,axis=0,keepdims=False)*self.win_size
+            result.append(self.output(context))
 
-        return context
+            self.Zu=context
+
+        return result
 
 

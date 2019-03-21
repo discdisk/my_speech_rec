@@ -11,23 +11,7 @@ from chainer.utils import collections_abc
 from chainer.utils import type_check
 from chainer.iterators.order_samplers import OrderSampler
 import math
-
-
-def argsort_list_descent(lst):
-    return numpy.argsort([-len(x.data) for x in lst]).astype('i')
-
-
-def permutate_list(lst, indices, inv):
-    ret = [None] * len(lst)
-    if inv:
-        for i, ind in enumerate(indices):
-            ret[ind] = lst[i]
-    else:
-        for i, ind in enumerate(indices):
-            ret[i] = lst[ind]
-    return ret
-
-
+import pickle
 class util():
     """docstring for utils"""
     def __init__(self,device,blank):
@@ -35,73 +19,65 @@ class util():
         self.xp = cuda.cupy if device>-1 else np
         self.device=device
         self.blank=blank
-        self.stacked_frames=8
-        self.skip_size=3
-
-        self.pad_size=int((9-1)/2) #attention winSize 9
-        self.pad_zero=xp.zeros((self.pad_size,self.stacked_frames*40),dtype=self.xp.float32)
+        self.stacked_frames=5
+        self.skip_size=2
         
 
     def converter(self,batch,device=-1):
         # alternative to chainer.dataset.concat_examples
         DATA_SHAPE=40 #40 log filterbank
 
-        Xs = [self.xp.asarray(list(X)).astype(self.xp.float32).reshape(-1,DATA_SHAPE)for X, _ in batch]
+        Xs = [to_device(self.device,np.load(path).astype(np.float32)) for path, _ in batch]
+
         Xs =[F.concat((X,self.xp.zeros((self.stacked_frames-len(X),DATA_SHAPE),dtype=self.xp.float32)),axis=0) if len(X)<self.stacked_frames else X for X in Xs]
         Xs =[F.pad_sequence([X[i:i+self.stacked_frames] for i in range(0,len(X),self.skip_size)]).reshape(-1,DATA_SHAPE*self.stacked_frames) for X in Xs]
-        
-
-        #pad sequence because of local attention winSize
-        Xs=[F.concat((F.concat((self.pad_zero,x),axis=0),self.pad_zero),axis=0) for x in Xs]
-        
-
-        #sort input Seq by length
-        indices = argsort_list_descent(Xs)
-        indices_array = xp.array(indices)
-
-        Xs = permutate_list(Xs, indices, inv=False)
-
-
         self.numframes = [len(X) for X in Xs]
 
 
         word_label = [self.xp.asarray(lab[0]).astype(self.xp.int32) for _, lab in batch]
-        type_label = [self.xp.asarray(lab[1]).astype(self.xp.int32) for _, lab in batch]
-        
-        word_label = permutate_list(word_label, indices, inv=False)
-        type_label = permutate_list(type_label, indices, inv=False)
-        self.label_length=[len(l) for l in word_label]
+        char_lable = [self.xp.asarray(lab[1]).astype(self.xp.int32) for _, lab in batch]
 
+        word_label_length=[len(l) for l in word_label]
+        for i,(x,y) in enumerate(zip(self.numframes,word_label_length)):
+            if x<y:
+                zzz=self.xp.zeros((y-x,DATA_SHAPE*self.stacked_frames),dtype=self.xp.float32)
+                Xs[i]=F.concat((Xs[i],zzz),axis=0)
+                print('bad data...'*10)
+                self.numframes[i]=self.numframes[i]+y-x
 
-
-        self.label_length=self.xp.asarray(self.label_length,dtype=self.xp.int32)
-
-        lable_batch=(word_label,type_label)
+        lable_batch=(word_label,char_lable)
 
         return Xs, lable_batch
 
 
     def ctc_loss(self,ys, lable_batch):
-        (word_label,type_label)=lable_batch
-        (word_ys,type_ys)=ys
+        (word_label,char_lable)=lable_batch
 
-        lables = concat_examples(word_label, self.device, padding=self.blank)
-        type_labels = concat_examples(type_label, self.device, padding=self.blank)
-        numframes=self.numframes
+        word_label_length=[len(l) for l in word_label]
+        word_label_length=self.xp.asarray(word_label_length,dtype=self.xp.int32)
 
-        input_length = self.xp.asarray(numframes, dtype=self.xp.int32)
+        char_label_length=[len(l) for l in char_lable]
+        char_label_length=self.xp.asarray(char_label_length,dtype=self.xp.int32)
+
+        (word_ys,char_ys)=ys
+
+        word_lables = concat_examples(word_label, self.device, padding=self.blank)
+        char_lables = concat_examples(char_lable, self.device, padding=self.blank)
+        
+
+        input_length = self.xp.asarray(self.numframes, dtype=self.xp.int32)
 
 
-        word_loss = F.connectionist_temporal_classification(word_ys, lables, self.blank, input_length, self.label_length)
-        type_loss = F.connectionist_temporal_classification(type_ys, type_labels, self.blank, input_length, self.label_length)
-        loss=(4*word_loss+type_loss)/5
+        word_loss = F.connectionist_temporal_classification(word_ys, word_lables, self.blank, input_length, word_label_length)
+        char_loss = F.connectionist_temporal_classification(char_ys, char_lables, self.blank, input_length, char_label_length)
+        
 
-        print(loss)
+        print(word_loss)
         # print(math.isnan(loss.data))
         # if loss.data>1000 or math.isnan(loss.data):
         #     print(list(zip(input_length, self.label_length)))
 
-        return loss
+        return word_loss,char_loss
     
 
     def cal_WER(self,x,y,predictor):
@@ -145,151 +121,11 @@ class util():
 
 
 
-class LengthOrderSampler(OrderSampler):
-
-    """Sampler that generates lenth orders.
-
-    This is expected to be used together with Chainer's iterators.
-    An order sampler is called by an iterator every epoch.
-
-
-    """
-
-    def __init__(self, dataset, maxlen_in=800, maxlen_out=150,length_order=None):
-        if length_order is None:
-            print('ordering')
-            self._data = dataset
-            order=sorted(range(len(self._data)),key=lambda k:len(self._data[k][0]))
-            print('orderin ===>sorted')
-            self.length_order=[]
-            print('orderin ===>picking')
-            for o in order:
-                data=self._data[o]
-                if len(data[0])<maxlen_in and len(data[1])<maxlen_out:
-                    self.length_order.append(o)
-            print('ordering done')
-        else:
-            self.length_order=length_order
-            print('loaded')
-
-    def __call__(self, current_order, current_position):
-        return self.length_order
 
 
 
-import collections,six,logging
-def sum_sqnorm(arr):
-    sq_sum = collections.defaultdict(float)
-    for x in arr:
-        with cuda.get_device_from_array(x) as dev:
-            if x is not None:
-                x = x.ravel()
-                s = x.dot(x)
-                sq_sum[int(dev)] += s
-    return sum([float(i) for i in six.itervalues(sq_sum)])
 
-
-class myOptimizers(chainer.optimizers.RMSprop):
-    """docstring for myUpdater"""
-    def update(self, lossfun=None, *args, **kwds):
-        """Updates parameters based on a loss function or computed gradients.
-
-        This method runs in two ways.
-
-        - If ``lossfun`` is given, then it is used as a loss function to
-          compute gradients.
-        - Otherwise, this method assumes that the gradients are already
-          computed.
-
-        In both cases, the computed gradients are used to update parameters.
-        The actual update routines are defined by the update rule of each
-        parameter.
-
-        """
-        if lossfun is not None:
-            use_cleargrads = getattr(self, '_use_cleargrads', True)
-            loss = lossfun(*args, **kwds)
-
-            if use_cleargrads:
-                self.target.cleargrads()
-            else:
-                self.target.zerograds()
-
-            loss.backward(loss_scale=self._loss_scale)
-            loss.unchain_backward()
-            del loss
-
-        grad_norm = np.sqrt(sum_sqnorm(
-            [p.grad for p in self.target.params(False)]))
-
-        if math.isnan(grad_norm):
-            logging.warning('grad norm is nan. Do not update model.')
-        else:
-            
-            self.reallocate_cleared_grads()
-
-            self.call_hooks('pre')
-
-            self.t += 1
-
-            for param in self.target.params():
-                param.update()
-
-            self.reallocate_cleared_grads()
-
-            self.call_hooks('post')
-            
-
-class myAdamOptimizers(chainer.optimizers.Adam):
-    """docstring for myUpdater"""
-    def update(self, lossfun=None, *args, **kwds):
-        """Updates parameters based on a loss function or computed gradients.
-
-        This method runs in two ways.
-
-        - If ``lossfun`` is given, then it is used as a loss function to
-          compute gradients.
-        - Otherwise, this method assumes that the gradients are already
-          computed.
-
-        In both cases, the computed gradients are used to update parameters.
-        The actual update routines are defined by the update rule of each
-        parameter.
-
-        """
-        if lossfun is not None:
-            use_cleargrads = getattr(self, '_use_cleargrads', True)
-            loss = lossfun(*args, **kwds)
-
-            if use_cleargrads:
-                self.target.cleargrads()
-            else:
-                self.target.zerograds()
-
-            loss.backward(loss_scale=self._loss_scale)
-            loss.unchain_backward()
-            del loss
-
-        grad_norm = np.sqrt(sum_sqnorm(
-            [p.grad for p in self.target.params(False)]))
-
-        if math.isnan(grad_norm):
-            logging.warning('grad norm is nan. Do not update model.')
-        else:
-            
-            self.reallocate_cleared_grads()
-
-            self.call_hooks('pre')
-
-            self.t += 1
-
-            for param in self.target.params():
-                param.update()
-
-            self.reallocate_cleared_grads()
-
-            self.call_hooks('post')
-
+    
 
 if __name__ == '__main__':
     u=util(0,0)
