@@ -6,23 +6,6 @@ import numpy as np
 from chainer.backends import cuda
 
 
-class Linear3D(L.Linear):
-    def __init__(self, *args, **kwargs):
-        super(Linear3D, self).__init__(*args, **kwargs)
-
-    def call(self, x):
-        return super(Linear3D, self).__call__(x)
-
-    def __call__(self, x):
-        if x.ndim == 2:
-            return self.call(x)
-        assert x.ndim == 3
-
-        x_2d = x.reshape((-1, x.shape[-1]))
-        out_2d = self.call(x_2d)
-        out_3d = out_2d.reshape(x.shape[:-1] + (out_2d.shape[-1], ))
-        # (B, S, W)
-        return out_3d
 
 
 class RNN(chainer.Chain):
@@ -34,11 +17,8 @@ class RNN(chainer.Chain):
         n_word_out=n_out[0]
         n_char_out=n_out[1]
         with self.init_scope():
-            # self.layer_norm1=L.LayerNormalization()
             self.l1 = L.Linear(None, n_mid_units,initialW=initializer)
-            # self.batch_norm1=L.BatchNormalization(n_mid_units)
             self.char_out = L.Linear(n_mid_units, n_char_out,initialW=initializer)
-
             self.lstm1 = L.NStepLSTM(1,
                                     in_size=n_mid_units, \
                                     out_size=n_mid_units,
