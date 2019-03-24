@@ -5,7 +5,6 @@ from chainer.dataset import to_device
 from chainer.dataset import concat_examples
 from chainer import training
 import numpy as np
-import decoder
 from chainer.functions.loss.ctc import ConnectionistTemporalClassification
 from chainer.utils import collections_abc
 from chainer.utils import type_check
@@ -34,7 +33,7 @@ class util():
         self.numframes = [len(X) for X in Xs]
 
 
-        word_label = [self.xp.asarray(lab[0]).astype(self.xp.int32) for _, lab in batch]
+        word_label = [self.xp.asarray([lab[0]]).astype(self.xp.int32) for _, lab in batch]
         char_lable = [self.xp.asarray(lab[1]).astype(self.xp.int32) for _, lab in batch]
 
         word_label_length=[len(l) for l in word_label]
@@ -45,39 +44,43 @@ class util():
                 print('bad data...'*10)
                 self.numframes[i]=self.numframes[i]+y-x
 
-        lable_batch=(word_label,char_lable)
+        # lable_batch=(word_label,char_lable)
+        target=F.concat(word_label,axis=1)
 
-        return Xs, lable_batch
+        return (Xs,word_label), target[0]
 
 
     def ctc_loss(self,ys, lable_batch):
+        input_length = self.xp.asarray(self.numframes, dtype=self.xp.int32)
         (word_label,char_lable)=lable_batch
+        (word_ys,char_ys)=ys
+
+
+
 
         word_label_length=[len(l) for l in word_label]
         word_label_length=self.xp.asarray(word_label_length,dtype=self.xp.int32)
-
-        char_label_length=[len(l) for l in char_lable]
-        char_label_length=self.xp.asarray(char_label_length,dtype=self.xp.int32)
-
-        (word_ys,char_ys)=ys
-
         word_lables = concat_examples(word_label, self.device, padding=self.blank)
-        char_lables = concat_examples(char_lable, self.device, padding=self.blank)
-        
-
-        input_length = self.xp.asarray(self.numframes, dtype=self.xp.int32)
-
-
         word_loss = F.connectionist_temporal_classification(word_ys, word_lables, self.blank, input_length, word_label_length)
-        char_loss = F.connectionist_temporal_classification(char_ys, char_lables, self.blank, input_length, char_label_length)
+        print(word_loss)
         
 
-        print(word_loss)
+
+        if char_ys is not None:
+            
+            char_label_length=[len(l) for l in char_lable]
+            char_label_length=self.xp.asarray(char_label_length,dtype=self.xp.int32)
+            char_lables = concat_examples(char_lable, self.device, padding=self.blank)
+            char_loss = F.connectionist_temporal_classification(char_ys, char_lables, self.blank, input_length, char_label_length)
+
+            return word_loss,char_loss
+
+        else:
+            return word_loss
         # print(math.isnan(loss.data))
         # if loss.data>1000 or math.isnan(loss.data):
         #     print(list(zip(input_length, self.label_length)))
 
-        return word_loss,char_loss
     
 
     def cal_WER(self,x,y,predictor):
