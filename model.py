@@ -81,8 +81,8 @@ class RNN(chainer.Chain):
 
         word_embed=F.stack(word_embed,axis=1)
 
-        for key in word_embed:
-            context=self.attend(h,key)
+        contexts=self.attend(h, word_embed)
+        for context in contexts:
             _, _, out=self.decoder(None, None, list(context))
             out=self.word_output(F.stack(out,axis=0)[:,-1,:].reshape(self.batch_size,self.n_mid_units))
             result.append(out)
@@ -121,24 +121,31 @@ class Attention(chainer.Chain):
             self.query_layer = L.Linear(n_mid_units, self.att_units_size,initialW=initializer)
             self.att_cal = L.Linear(self.att_units_size,1,initialW=initializer)
 
-    def __call__(self, input_query,key):
+    def cal_hx(self,input_query):
+        self.hx = self.query_layer(input_query,n_batch_axes=2)
+        self.input_query = input_query
+
+    def cal_key(self,keys):
+        self.keys=self.key_layer(keys,n_batch_axes=2)
+        self.keys=F.expand_dims(self.keys,axis=2)
+        
+
+    def __call__(self,input_query,keys):
             
-        hx=self.query_layer(input_query,n_batch_axes=2)
+        self.cal_hx(input_query)
+        self.cal_key(keys)
+        for Z in self.keys:
+            Z=F.broadcast_to(Z,(self.hx.shape))
 
-        Z=self.key_layer(key)
-        Z=F.broadcast_to(F.expand_dims(Z,axis=1),(hx.shape))
+            attend=self.hx+Z
 
-        attend=hx+Z
-
-        attend=F.sigmoid(self.att_cal(
-                        F.tanh(attend.reshape(-1,self.att_units_size))
-                        ).reshape(self.batch_size,-1,1))
-
-
-
-
-        context=input_query*attend
+            attend=F.sigmoid(self.att_cal(
+                            F.tanh(attend.reshape(-1,self.att_units_size))
+                            ).reshape(self.batch_size,-1,1))
 
 
 
-        return context
+
+            context=self.input_query*attend
+
+            yield context
