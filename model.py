@@ -60,6 +60,8 @@ class RNN(chainer.Chain):
 
     def __call__(self, data):
         xs, word_label=data
+        numframes = [len(X) for X in xs]
+
         out_len=[len(w[0]) for w in word_label]
         # forward calculation
         result=[]
@@ -83,8 +85,12 @@ class RNN(chainer.Chain):
 
         contexts=self.attend(h, word_embed)
         for context in contexts:
+            # weighted feature map
             _, _, out=self.decoder(None, None, list(context))
-            out=self.word_output(F.stack(out,axis=0)[:,-1,:].reshape(self.batch_size,self.n_mid_units))
+
+
+
+            out=self.word_output(F.stack([o[n-1] for o,n in zip(out,numframes)],axis=0))
             result.append(out)
 
 
@@ -134,6 +140,7 @@ class Attention(chainer.Chain):
             
         self.cal_hx(input_query)
         self.cal_key(keys)
+        contexts=[]
         for Z in self.keys:
             Z=F.broadcast_to(Z,(self.hx.shape))
 
@@ -147,5 +154,7 @@ class Attention(chainer.Chain):
 
 
             context=self.input_query*attend
+            contexts.append(context)
 
-            yield context
+        # better performance than yield
+        return contexts
