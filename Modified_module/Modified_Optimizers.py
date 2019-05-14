@@ -7,7 +7,12 @@ from chainer.utils import collections_abc
 from chainer.utils import type_check
 
 
-import collections,six,logging,math
+import collections
+import six
+import logging
+import math
+
+
 def sum_sqnorm(arr):
     sq_sum = collections.defaultdict(float)
     for x in arr:
@@ -21,6 +26,7 @@ def sum_sqnorm(arr):
 
 class myOptimizers(chainer.optimizers.RMSprop):
     """docstring for myUpdater"""
+
     def update(self, lossfun=None, *args, **kwds):
         """Updates parameters based on a loss function or computed gradients.
 
@@ -55,7 +61,7 @@ class myOptimizers(chainer.optimizers.RMSprop):
         if math.isnan(grad_norm):
             logging.warning('grad norm is nan. Do not update model.')
         else:
-            
+
             self.reallocate_cleared_grads()
 
             self.call_hooks('pre')
@@ -68,10 +74,11 @@ class myOptimizers(chainer.optimizers.RMSprop):
             self.reallocate_cleared_grads()
 
             self.call_hooks('post')
-            
+
 
 class myAdamOptimizers(chainer.optimizers.Adam):
     """docstring for myUpdater"""
+
     def update(self, lossfun=None, *args, **kwds):
         """Updates parameters based on a loss function or computed gradients.
 
@@ -106,7 +113,7 @@ class myAdamOptimizers(chainer.optimizers.Adam):
         if math.isnan(grad_norm):
             logging.warning('grad norm is nan. Do not update model.')
         else:
-            
+
             self.reallocate_cleared_grads()
 
             self.call_hooks('pre')

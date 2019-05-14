@@ -1,25 +1,12 @@
 import chainer
 
-# from __future__ import division
-
-# import numpy
-
-# from chainer.dataset import iterator
-# from chainer.iterators.order_samplers import ShuffleOrderSampler
-
-
-        
-
-
 
 class My_SerialIterator(chainer.iterators.SerialIterator):
     def __init__(self, dataset, batch_size,
                  repeat=True, shuffle=None, order_sampler=None):
         super(My_SerialIterator, self).__init__(dataset, batch_size,
-                 repeat=True, shuffle=None, order_sampler=None)
-        self.len_limit = 15
-
-
+                                                repeat=True, shuffle=None, order_sampler=None)
+        self.len_limit = 8
 
     def __next__(self):
         if not self._repeat and self.epoch > 0:
@@ -32,18 +19,18 @@ class My_SerialIterator(chainer.iterators.SerialIterator):
         N = self._epoch_size
 
         if self._order is None:
-            ##modify
+            # modify
             batch = []
-            count=0
-            while len(batch)<self.batch_size:
-                if count+i<N:
-                    if 3<len(self.dataset[i+count][1][0])<self.len_limit:
-                        batch.append(self.dataset[i+count])
+            count = 0
+            while len(batch) < self.batch_size:
+                if count + i < N:
+                    if 2 < len(self.dataset[i + count][1][0]) < self.len_limit:
+                        batch.append(self.dataset[i + count])
                         i_end = i + count
-                else: 
-                    i_end=N+self.batch_size-len(batch)
+                else:
+                    i_end = N + self.batch_size - len(batch)
                     break
-                count+=1
+                count += 1
 
         else:
             batch = [self.dataset[index] for index in self._order[i:i_end]]
@@ -69,10 +56,9 @@ class My_SerialIterator(chainer.iterators.SerialIterator):
 
             self.epoch += 1
             self.is_new_epoch = True
-            self.len_limit += 3
+            self.len_limit += 5
         else:
             self.is_new_epoch = False
             self.current_position = i_end
 
         return batch
-
